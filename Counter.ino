@@ -1,8 +1,9 @@
 #include <ESP8266WiFi.h>
 #include <WiFiClientSecure.h>
+#include <LittleFS.h>
 #include <MD_Parola.h>
 #include <MD_MAX72xx.h>
-#include <Ticker.h>
+#include <WiFiManager.h>
 
 #include <YoutubeApi.h>
 #include <ArduinoJson.h>
@@ -17,28 +18,163 @@
 #define CS_PIN    D7  // or SS
 
 #define PIN   D4
-#define LED_NUM 3 //CHANGE this to the number of LEDs you have
-Adafruit_NeoPixel leds = Adafruit_NeoPixel(LED_NUM, PIN, NEO_GRB + NEO_KHZ800);
+#define LED_NUM 3 // CHANGE this to the number of LEDs you have
 
+const char* CONFIG_FILE = "/config.json";
+const char* CONFIG_PORTAL_SSID = "YouTubePlayButtonSetup";
+const unsigned long SUBSCRIBER_FETCH_INTERVAL_MS = 60UL * 60UL * 1000UL;
+
+char youtubeApiKey[80] = "";
+char youtubeChannelId[48] = "";
+bool shouldSaveConfig = false;
+unsigned long lastSubscriberFetch = 0;
+
+Adafruit_NeoPixel leds = Adafruit_NeoPixel(LED_NUM, PIN, NEO_GRB + NEO_KHZ800);
 MD_Parola myDisplay = MD_Parola(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 
-const char* WIFI_SSID = ""; //ADD YOUR SSID HERE
-const char* WIFI_PASSWORD = ""; //ADD YOUR PASS HERE
-
-#define CHANNEL_ID "" //ADD YOUR CHANNEL ID HERE
-
-#define API_KEY "" //ADD YOUR API KEY HERE
 WiFiClientSecure client;
-YoutubeApi api(API_KEY, client);
+YoutubeApi api(youtubeApiKey, client);
 
-Ticker fetchSubscribersTimer;
+void saveConfigCallback() {
+  shouldSaveConfig = true;
+}
+
+bool initializeFileSystem() {
+  if (LittleFS.begin()) {
+    return true;
+  }
+
+  Serial.println(F("LittleFS mount failed. Formatting filesystem."));
+  if (!LittleFS.format()) {
+    Serial.println(F("LittleFS format failed."));
+    return false;
+  }
+
+  return LittleFS.begin();
+}
+
+bool loadConfig() {
+  if (!initializeFileSystem()) {
+    return false;
+  }
+
+  if (!LittleFS.exists(CONFIG_FILE)) {
+    return false;
+  }
+
+  File configFile = LittleFS.open(CONFIG_FILE, "r");
+  if (!configFile) {
+    Serial.println(F("Failed to open config file."));
+    return false;
+  }
+
+  StaticJsonDocument<256> doc;
+  DeserializationError error = deserializeJson(doc, configFile);
+  configFile.close();
+
+  if (error) {
+    Serial.print(F("Failed to parse config file: "));
+    Serial.println(error.c_str());
+    return false;
+  }
+
+  strlcpy(youtubeApiKey, doc["apiKey"] | "", sizeof(youtubeApiKey));
+  strlcpy(youtubeChannelId, doc["channelId"] | "", sizeof(youtubeChannelId));
+
+  return strlen(youtubeApiKey) > 0 && strlen(youtubeChannelId) > 0;
+}
+
+bool saveConfig() {
+  if (!initializeFileSystem()) {
+    return false;
+  }
+
+  StaticJsonDocument<256> doc;
+  doc["apiKey"] = youtubeApiKey;
+  doc["channelId"] = youtubeChannelId;
+
+  File configFile = LittleFS.open(CONFIG_FILE, "w");
+  if (!configFile) {
+    Serial.println(F("Failed to open config file for writing."));
+    return false;
+  }
+
+  size_t bytesWritten = serializeJson(doc, configFile);
+  configFile.close();
+
+  if (bytesWritten == 0) {
+    Serial.println(F("Failed to write config file."));
+    return false;
+  }
+
+  Serial.println(F("Config saved."));
+  return true;
+}
+
+bool copyConfigValue(const char* value, char* target, size_t targetSize) {
+  if (value == nullptr || strlen(value) == 0) {
+    return false;
+  }
+
+  if (strncmp(value, target, targetSize) == 0) {
+    return false;
+  }
+
+  strlcpy(target, value, targetSize);
+  return true;
+}
+
+void connectWifiAndLoadConfig() {
+  bool hasConfig = loadConfig();
+
+  WiFi.mode(WIFI_STA);
+
+  WiFiManager wifiManager;
+  wifiManager.setSaveParamsCallback(saveConfigCallback);
+
+  WiFiManagerParameter apiKeyParameter("api_key", "YouTube API key", youtubeApiKey, sizeof(youtubeApiKey));
+  WiFiManagerParameter channelIdParameter("channel_id", "YouTube Channel ID", youtubeChannelId, sizeof(youtubeChannelId));
+  wifiManager.addParameter(&apiKeyParameter);
+  wifiManager.addParameter(&channelIdParameter);
+
+  myDisplay.displayClear();
+  myDisplay.print(hasConfig ? "WiFi" : "Setup");
+
+  bool connected = hasConfig
+    ? wifiManager.autoConnect(CONFIG_PORTAL_SSID)
+    : wifiManager.startConfigPortal(CONFIG_PORTAL_SSID);
+
+  if (!connected) {
+    Serial.println(F("Failed to connect or configure Wi-Fi."));
+    myDisplay.displayClear();
+    myDisplay.print("Retry");
+    delay(3000);
+    ESP.restart();
+  }
+
+  bool configChanged = false;
+  configChanged |= copyConfigValue(apiKeyParameter.getValue(), youtubeApiKey, sizeof(youtubeApiKey));
+  configChanged |= copyConfigValue(channelIdParameter.getValue(), youtubeChannelId, sizeof(youtubeChannelId));
+
+  if (shouldSaveConfig || configChanged) {
+    saveConfig();
+  }
+
+  if (strlen(youtubeApiKey) == 0 || strlen(youtubeChannelId) == 0) {
+    Serial.println(F("Missing YouTube API key or channel ID."));
+    myDisplay.displayClear();
+    myDisplay.print("Setup");
+    delay(3000);
+    ESP.restart();
+  }
+}
 
 void setup() {
   Serial.begin(115200);
 
   leds.begin();
 
-  //initialize the LED MAtrix 4, 8x8
+  // Initialize the LED Matrix 4, 8x8.
   myDisplay.begin();
   myDisplay.setIntensity(10);
   myDisplay.setTextAlignment(PA_CENTER);
@@ -47,31 +183,18 @@ void setup() {
   myDisplay.displayClear();
   myDisplay.print("Hello");
 
-
   delay(1000);
 
-  // Connect to Wi-Fi
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  auto status = WiFi.status();
-  while ( (status != WL_CONNECTED) && (status != WL_CONNECT_FAILED) ) {
-    delay(300);
-    status = WiFi.status();
-    myDisplay.print(".");
-    delay(300);
-    myDisplay.print("..");
-    delay(300);
-    myDisplay.print("...");
-    delay(300);
-    myDisplay.displayClear();
-  }
+  connectWifiAndLoadConfig();
+
   myDisplay.displayClear();
   myDisplay.print("Done!");
-  client.setInsecure();
 
-  fetchSubscribersTimer.attach(3600, handleFetchSubscribers); // Call handleFetchSubscribers every hour
+  client.setInsecure();
+  handleFetchSubscribers();
 }
 
-void led_set(uint8 R, uint8 G, uint8 B) {
+void led_set(uint8_t R, uint8_t G, uint8_t B) {
   for (int i = 0; i < LED_NUM; i++) {
     leds.setPixelColor(i, leds.Color(R, G, B));
     leds.show();
@@ -79,54 +202,65 @@ void led_set(uint8 R, uint8 G, uint8 B) {
   }
 }
 
-
-String formatSubscriberCount(long int count) {
+String formatSubscriberCount(long count) {
   if (count < 1000) {
      return String(count);
-  }
-  else if (count < 10000) { // Less than 10K
+  } else if (count < 10000) {
      return String(count);
-  } else if (count < 100000) { // Less than 100K
+  } else if (count < 100000) {
      int thousands = count / 1000;
-     int remainder = (count % 1000) / 10; // First two digits after the comma
+     int remainder = (count % 1000) / 10;
      return String(thousands) + "," + (remainder < 10 ? "0" : "") + String(remainder) + "K";
-  }
-  else if (count < 1000000) { // Less than 1M
+  } else if (count < 1000000) {
      int thousands = count / 1000;
-     int remainder = (count % 1000) / 100; // First one digits after the comma
-     return String(thousands) + "," + (remainder < 1 ? "0" : "") + String(remainder) + "K";
-  } else if (count < 10000000) { // Less than 10M
+     int remainder = (count % 1000) / 100;
+     return String(thousands) + "," + String(remainder) + "K";
+  } else if (count < 10000000) {
     int millions = count / 1000000;
-    int remainder = (count % 1000000) / 100000; // First two digits after the comma
-    return String(millions) + "," + (remainder < 1 ? "0" : "") + String(remainder) + "M";
-  } else { // More than 10M
+    int remainder = (count % 1000000) / 100000;
+    return String(millions) + "," + String(remainder) + "M";
+  } else {
     int millions = count / 1000000;
     return String(millions) + "M";
   }
 }
 
-
-
-String getSubscriberCount() {
-  if(api.getChannelStatistics(CHANNEL_ID)) {
-    return String(api.channelStats.subscriberCount);
+bool fetchSubscriberCount(long* subscriberCount) {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println(F("Wi-Fi is disconnected."));
+    return false;
   }
-  return "Error";
-}
 
+  if (api.getChannelStatistics(youtubeChannelId)) {
+    *subscriberCount = api.channelStats.subscriberCount;
+    return true;
+  }
+
+  return false;
+}
 
 void handleFetchSubscribers() {
-  String rawSubscriberCountString = getSubscriberCount();
-  long int rawSubscriberCount = rawSubscriberCountString.toInt();
-  String formattedSubscriberCount = formatSubscriberCount(rawSubscriberCount);
-  
+  long rawSubscriberCount = 0;
+
   myDisplay.displayClear();
-  myDisplay.print(formattedSubscriberCount);
+  myDisplay.print("Fetch");
+
+  if (fetchSubscriberCount(&rawSubscriberCount)) {
+    String formattedSubscriberCount = formatSubscriberCount(rawSubscriberCount);
+    Serial.print(F("Subscriber Count: "));
+    Serial.println(rawSubscriberCount);
+    myDisplay.displayClear();
+    myDisplay.print(formattedSubscriberCount);
+  } else {
+    Serial.println(F("Failed to fetch subscriber count."));
+    myDisplay.displayClear();
+    myDisplay.print("Error");
+  }
+
+  lastSubscriberFetch = millis();
 }
 
-
 void loop() {
-  //run every second
   led_set(50, 50, 50);
   led_set(80, 80, 100);
 
@@ -135,5 +269,8 @@ void loop() {
 
   led_set(50, 50, 50);
   led_set(80, 100, 80);
-  fetchSubscribersTimer.update();
+
+  if (millis() - lastSubscriberFetch >= SUBSCRIBER_FETCH_INTERVAL_MS) {
+    handleFetchSubscribers();
+  }
 }
