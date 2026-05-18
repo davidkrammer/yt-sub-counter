@@ -358,30 +358,68 @@ void waitWithAccentLeds(unsigned long durationMs) {
   }
 }
 
-String formatSubscriberCount(long count) {
-  if (count < 100000) {
-    return String(count);
-  } else if (count < 1000000) {
-    return String(count / 1000) + "K";
-  } else if (count < 10000000) {
-    int millions = count / 1000000;
-    int remainder = (count % 1000000) / 100000;
-    return String(millions) + "." + String(remainder) + "M";
-  } else {
-    int millions = count / 1000000;
-    return String(millions) + "M";
+String formatTwoDigits(unsigned int value) {
+  if (value < 10) {
+    return "0" + String(value);
   }
+
+  return String(value);
 }
 
-String formatSubscriberDelta(long delta) {
+String formatSubscriberCount(long count) {
+  unsigned long displayCount = count > 0 ? count : 0;
+
+  if (displayCount < 1000UL) {
+    return String(displayCount);
+  } else if (displayCount < 10000UL) {
+    return String(displayCount / 1000UL) + "." + formatTwoDigits((displayCount % 1000UL) / 10UL) + "K";
+  } else if (displayCount < 100000UL) {
+    return String(displayCount / 1000UL) + "." + String((displayCount % 1000UL) / 100UL) + "K";
+  } else if (displayCount < 1000000UL) {
+    return String(displayCount / 1000UL) + "K";
+  } else if (displayCount < 10000000UL) {
+    return String(displayCount / 1000000UL) + "." + formatTwoDigits((displayCount % 1000000UL) / 10000UL) + "M";
+  } else if (displayCount < 100000000UL) {
+    return String(displayCount / 1000000UL) + "." + String((displayCount % 1000000UL) / 100000UL) + "M";
+  } else if (displayCount < 1000000000UL) {
+    return String(displayCount / 1000000UL) + "M";
+  }
+
+  return String(displayCount / 1000000000UL) + "B";
+}
+
+String formatPublicDisplayStepMagnitude(unsigned long delta, unsigned long currentCount) {
+  if (currentCount < 1000UL) {
+    return String(delta);
+  } else if (currentCount < 10000UL && delta >= 10UL) {
+    return String(delta / 1000UL) + "." + formatTwoDigits((delta % 1000UL) / 10UL) + "K";
+  } else if (currentCount < 100000UL && delta >= 100UL) {
+    return String(delta / 1000UL) + "." + String((delta % 1000UL) / 100UL) + "K";
+  } else if (currentCount < 1000000UL && delta >= 1000UL) {
+    return String(delta / 1000UL) + "K";
+  } else if (currentCount < 10000000UL && delta >= 10000UL) {
+    return String(delta / 1000000UL) + "." + formatTwoDigits((delta % 1000000UL) / 10000UL) + "M";
+  } else if (currentCount < 100000000UL && delta >= 100000UL) {
+    return String(delta / 1000000UL) + "." + String((delta % 1000000UL) / 100000UL) + "M";
+  } else if (currentCount < 1000000000UL && delta >= 1000000UL) {
+    return String(delta / 1000000UL) + "M";
+  } else if (currentCount >= 1000000000UL && delta >= 1000000000UL) {
+    return String(delta / 1000000000UL) + "B";
+  }
+
+  return formatCompactDeltaMagnitude(delta);
+}
+
+String formatPublicDisplayStepDelta(long delta, long currentCount) {
   long absoluteDelta = labs(delta);
+  unsigned long displayContext = currentCount > 0 ? currentCount : absoluteDelta;
 
   if (delta < 0) {
-    return "-" + formatCompactDeltaMagnitude(absoluteDelta);
+    return "-" + formatPublicDisplayStepMagnitude(absoluteDelta, displayContext);
   }
 
   if (delta > 0) {
-    return "+" + formatCompactDeltaMagnitude(absoluteDelta);
+    return "+" + formatPublicDisplayStepMagnitude(absoluteDelta, displayContext);
   }
 
   return "0";
@@ -514,12 +552,12 @@ void drawDeltaViewFrame(const String& deltaValue, uint8_t phase) {
   matrix->control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
 }
 
-void animateSubscriberDelta(long delta) {
+void animateSubscriberDelta(long delta, long currentCount) {
   if (delta <= 0) {
     return;
   }
 
-  String deltaValue = formatCompactDeltaMagnitude(delta);
+  String deltaValue = formatPublicDisplayStepMagnitude(delta, currentCount > 0 ? currentCount : delta);
   unsigned long startedAt = millis();
   uint8_t frame = 0;
 
@@ -535,10 +573,10 @@ void displayDemoText(const String& text, unsigned long durationMs) {
 }
 
 void runDisplayDemo() {
-  animateSubscriberDelta(YT_DISPLAY_DEMO_DELTA);
-  animateSubscriberDelta(999);
-  animateSubscriberDelta(1000);
-  animateSubscriberDelta(999000000L);
+  animateSubscriberDelta(YT_DISPLAY_DEMO_DELTA, YT_DISPLAY_DEMO_COUNT);
+  animateSubscriberDelta(100, 18700);
+  animateSubscriberDelta(1000, 123000);
+  animateSubscriberDelta(10000, 1230000);
   displayDemoText(formatSubscriberCount(YT_DISPLAY_DEMO_COUNT), 2500);
   displayDemoText(ERROR_TEXT_API_KEY, 2500);
   displayDemoText(ERROR_TEXT_CHANNEL_ID, 2500);
@@ -587,10 +625,10 @@ void handleFetchSubscribers() {
 
     if (hadPreviousCount && rawSubscriberCount > previousSubscriberCount) {
       long subscriberDelta = rawSubscriberCount - previousSubscriberCount;
-      String formattedDelta = formatSubscriberDelta(subscriberDelta);
-      Serial.print(F("Subscriber Delta: "));
+      String formattedDelta = formatPublicDisplayStepDelta(subscriberDelta, rawSubscriberCount);
+      Serial.print(F("Public Count Step: "));
       Serial.println(formattedDelta);
-      animateSubscriberDelta(subscriberDelta);
+      animateSubscriberDelta(subscriberDelta, rawSubscriberCount);
     }
 
     displayCenteredText(formattedSubscriberCount);

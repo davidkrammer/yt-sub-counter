@@ -5,9 +5,9 @@ ESP8266 firmware for showing a live YouTube subscriber count on a MAX7219 LED ma
 ## Features
 
 - Fetches YouTube channel statistics through the YouTube Data API v3.
-- Shows the current subscriber count on a 4-module MAX7219 LED matrix.
+- Shows the current public subscriber count on a 4-module MAX7219 LED matrix using YouTube-style shortening, for example `18.7K`.
 - Refreshes once on boot and then every 3 minutes from the main loop.
-- If the count increased, shows a 10-second `WAVE +NUMBER WAVE` view before the updated count, with a compact custom plus sign and adaptive `K`/`M` delta formatting.
+- If the public count increased, shows a 10-second `WAVE +NUMBER WAVE` view before the updated count, with a compact custom plus sign and adaptive public-step formatting such as `+0.1K`.
 - If the count decreased or stayed the same, updates the number without showing a change animation.
 - Shows specific short error text for missing API key, missing channel ID, Wi-Fi disconnects, and API request failures.
 - Keeps the NeoPixel accent LEDs animating during normal display, change animations, setup, and error states.
@@ -64,6 +64,8 @@ PlatformIO installs the project dependencies from `platformio.ini` automatically
 
 Keep the API key and channel ID ready for the device setup portal.
 
+YouTube does not expose exact YouTube Studio subscriber counts through the public Data API for channels above 1,000 subscribers. The API returns the public rounded-down count, so this firmware displays that value in the same shortened style instead of implying exact precision.
+
 ## Local Hardware Secrets
 
 The repo does not commit private values. For a local hardware deployment, copy the example file and fill in your values:
@@ -111,7 +113,7 @@ The ESP8266 stores the values locally and reuses them on future boots. If saved 
 
 ## Refresh Behavior
 
-The sketch fetches the subscriber count once after setup, then refreshes every 3 minutes. On each successful refresh after the first known count, if the count increased, it shows a roughly 10-second single view with an animated wave on both sides and the delta as `+NUMBER` in the middle. The plus sign is drawn as a small custom glyph, and large deltas are shortened, for example `+999`, `+1K`, or `+999M`. The wave uses the top and bottom rows, leaving the middle rows empty around the number. If the count decreased or stayed the same, it skips the animation and just shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
+The sketch fetches the subscriber count once after setup, then refreshes every 3 minutes. On each successful refresh after the first known count, if the public API count increased, it shows a roughly 10-second single view with an animated wave on both sides and the public display step as `+NUMBER` in the middle. For example, at `18.7K`, YouTube only exposes 100-subscriber steps, so the animation shows `+0.1K` when the public count moves to `18.8K`; it is not an exact "subscribers gained" metric. The plus sign is drawn as a small custom glyph, and larger public steps are shortened with `K` or `M`. The wave uses the top and bottom rows, leaving the middle rows empty around the number. If the count decreased or stayed the same, it skips the animation and just shows the updated subscriber count. The last known public count is stored in LittleFS so the public-step animation can survive a restart.
 
 Short error text:
 
