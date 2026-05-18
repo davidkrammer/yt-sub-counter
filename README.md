@@ -7,7 +7,10 @@ ESP8266 firmware for showing a live YouTube subscriber count on a MAX7219 LED ma
 - Fetches YouTube channel statistics through the YouTube Data API v3.
 - Shows the current subscriber count on a 4-module MAX7219 LED matrix.
 - Refreshes once on boot and then every 3 minutes from the main loop.
-- Shows a wave animation for subscriber changes, then `+NUMBER` or `-NUMBER`, then the updated count.
+- If the count increased, shows a 10-second `WAVE +NUMBER WAVE` view before the updated count, with a compact custom plus sign and adaptive `K`/`M` delta formatting.
+- If the count decreased or stayed the same, updates the number without showing a change animation.
+- Shows specific short error text for missing API key, missing channel ID, Wi-Fi disconnects, and API request failures.
+- Keeps the NeoPixel accent LEDs animating during normal display, change animations, setup, and error states.
 - Stores Wi-Fi credentials through WiFiManager.
 - Stores YouTube API key and channel ID in LittleFS.
 - Supports an optional local-only `secrets.h` file for hardware deployments.
@@ -108,7 +111,16 @@ The ESP8266 stores the values locally and reuses them on future boots. If saved 
 
 ## Refresh Behavior
 
-The sketch fetches the subscriber count once after setup, then refreshes every 3 minutes. On each successful refresh after the first known count, it shows a short top-and-bottom wave animation with the middle rows left empty, then shows the delta as `+NUMBER` or `-NUMBER`, and then shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
+The sketch fetches the subscriber count once after setup, then refreshes every 3 minutes. On each successful refresh after the first known count, if the count increased, it shows a roughly 10-second single view with an animated wave on both sides and the delta as `+NUMBER` in the middle. The plus sign is drawn as a small custom glyph, and large deltas are shortened, for example `+999`, `+1K`, or `+999M`. The wave uses the top and bottom rows, leaving the middle rows empty around the number. If the count decreased or stayed the same, it skips the animation and just shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
+
+Short error text:
+
+| Display | Meaning |
+| --- | --- |
+| `No API` | YouTube API key is missing |
+| `CH ID?` | YouTube channel ID is missing |
+| `WiFi?` | Wi-Fi is not connected or setup failed |
+| `API?` | YouTube API request failed |
 
 The refresh is driven by `millis()` in `loop()`, which keeps HTTPS/API work out of timer callbacks and avoids the update stall caused by the old loop counter approach.
 
@@ -130,7 +142,9 @@ The interval is set in `SUBSCRIBER_FETCH_INTERVAL_MS` in `Counter.ino`.
 
 ## Troubleshooting
 
-- Display shows `Setup`: the YouTube API key or channel ID is missing.
-- Display shows `Error`: Wi-Fi is disconnected, the API request failed, or the API key/channel ID is invalid.
+- Display shows `No API`: the YouTube API key is missing.
+- Display shows `CH ID?`: the YouTube channel ID is missing.
+- Display shows `WiFi?`: Wi-Fi is disconnected or setup failed.
+- Display shows `API?`: the YouTube API request failed or the key/channel is invalid.
 - Need to change saved settings: erase the ESP8266 flash or clear WiFiManager/LittleFS data, then reboot and use the setup portal again.
 - PlatformIO build fails after dependency changes: delete `.pio/` and run `platformio run` again.

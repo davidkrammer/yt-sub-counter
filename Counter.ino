@@ -57,11 +57,21 @@
 const char* CONFIG_FILE = "/config.json";
 const char* CONFIG_PORTAL_SSID = "YouTubePlayButtonSetup";
 const unsigned long SUBSCRIBER_FETCH_INTERVAL_MS = 3UL * 60UL * 1000UL;
-const unsigned long DELTA_TEXT_DISPLAY_MS = 1600UL;
+const unsigned long DELTA_SEQUENCE_DISPLAY_MS = 10000UL;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000UL;
 const uint8_t DISPLAY_COLUMN_COUNT = MAX_DEVICES * 8;
-const uint8_t WAVE_FRAME_COUNT = 18;
-const uint8_t WAVE_FRAME_DELAY_MS = 75;
+const uint8_t WAVE_FRAME_COUNT = 14;
+const uint8_t WAVE_FRAME_DELAY_MS = 60;
+const uint8_t DELTA_WAVE_MAX_WIDTH = 8;
+const uint8_t DELTA_PLUS_WIDTH = 3;
+const uint8_t DELTA_PLUS_SPACING = 1;
+const uint8_t CHAR_SPACING = 1;
+const unsigned long ACCENT_LED_STEP_MS = 120;
+
+const char* ERROR_TEXT_API_KEY = "No API";
+const char* ERROR_TEXT_CHANNEL_ID = "CH ID?";
+const char* ERROR_TEXT_WIFI = "WiFi?";
+const char* ERROR_TEXT_API_FETCH = "API?";
 
 char youtubeApiKey[80] = "";
 char youtubeChannelId[48] = "";
@@ -70,11 +80,22 @@ unsigned long lastSubscriberFetch = 0;
 long lastKnownSubscriberCount = -1;
 bool hasLastKnownSubscriberCount = false;
 
+enum FetchError {
+  FETCH_ERROR_NONE,
+  FETCH_ERROR_WIFI,
+  FETCH_ERROR_API
+};
+
+FetchError lastFetchError = FETCH_ERROR_NONE;
+
 Adafruit_NeoPixel leds = Adafruit_NeoPixel(LED_NUM, PIN, NEO_GRB + NEO_KHZ800);
 MD_Parola myDisplay = MD_Parola(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
 
 WiFiClientSecure client;
 YoutubeApi api(youtubeApiKey, client);
+
+unsigned long lastAccentLedStep = 0;
+uint8_t accentLedStep = 0;
 
 void saveConfigCallback() {
   shouldSaveConfig = true;
@@ -199,15 +220,13 @@ bool connectWithEmbeddedWifi() {
 
   Serial.print(F("Connecting to embedded Wi-Fi SSID: "));
   Serial.println(F(YT_WIFI_SSID));
-  myDisplay.displayClear();
-  myDisplay.print("WiFi");
+  displayCenteredText("WiFi");
 
   WiFi.begin(YT_WIFI_SSID, YT_WIFI_PASSWORD);
   unsigned long startedAt = millis();
 
   while (WiFi.status() != WL_CONNECTED && millis() - startedAt < WIFI_CONNECT_TIMEOUT_MS) {
-    delay(250);
-    yield();
+    waitWithAccentLeds(250);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -239,8 +258,7 @@ void connectWifiAndLoadConfig() {
   bool connected = hasConfig && connectWithEmbeddedWifi();
 
   if (!connected) {
-    myDisplay.displayClear();
-    myDisplay.print(hasConfig ? "WiFi" : "Setup");
+    displayCenteredText(hasConfig ? "WiFi" : "Setup");
 
     connected = hasConfig
       ? wifiManager.autoConnect(CONFIG_PORTAL_SSID)
@@ -249,9 +267,8 @@ void connectWifiAndLoadConfig() {
 
   if (!connected) {
     Serial.println(F("Failed to connect or configure Wi-Fi."));
-    myDisplay.displayClear();
-    myDisplay.print("Retry");
-    delay(3000);
+    displayCenteredText(ERROR_TEXT_WIFI);
+    waitWithAccentLeds(3000);
     ESP.restart();
   }
 
@@ -263,11 +280,17 @@ void connectWifiAndLoadConfig() {
     saveConfig();
   }
 
-  if (strlen(youtubeApiKey) == 0 || strlen(youtubeChannelId) == 0) {
-    Serial.println(F("Missing YouTube API key or channel ID."));
-    myDisplay.displayClear();
-    myDisplay.print("Setup");
-    delay(3000);
+  if (strlen(youtubeApiKey) == 0) {
+    Serial.println(F("Missing YouTube API key."));
+    displayCenteredText(ERROR_TEXT_API_KEY);
+    waitWithAccentLeds(3000);
+    ESP.restart();
+  }
+
+  if (strlen(youtubeChannelId) == 0) {
+    Serial.println(F("Missing YouTube channel ID."));
+    displayCenteredText(ERROR_TEXT_CHANNEL_ID);
+    waitWithAccentLeds(3000);
     ESP.restart();
   }
 }
@@ -283,10 +306,9 @@ void setup() {
   myDisplay.setTextAlignment(PA_CENTER);
   myDisplay.setPause(2000);
   myDisplay.setSpeed(40);
-  myDisplay.displayClear();
-  myDisplay.print("Hello");
+  displayCenteredText("Hello");
 
-  delay(1000);
+  waitWithAccentLeds(1000);
 
 #if YT_DISPLAY_DEMO
   return;
@@ -294,18 +316,45 @@ void setup() {
 
   connectWifiAndLoadConfig();
 
-  myDisplay.displayClear();
-  myDisplay.print("Done!");
+  displayCenteredText("Done!");
 
   client.setInsecure();
   handleFetchSubscribers();
 }
 
-void led_set(uint8_t R, uint8_t G, uint8_t B) {
-  for (int i = 0; i < LED_NUM; i++) {
-    leds.setPixelColor(i, leds.Color(R, G, B));
-    leds.show();
-    delay(66);
+void updateAccentLeds() {
+  static const uint8_t colors[][3] = {
+    {50, 50, 50},
+    {80, 80, 120},
+    {120, 80, 80},
+    {80, 120, 80},
+    {120, 110, 70},
+    {70, 120, 120}
+  };
+  const uint8_t colorCount = sizeof(colors) / sizeof(colors[0]);
+
+  if (millis() - lastAccentLedStep < ACCENT_LED_STEP_MS) {
+    return;
+  }
+
+  lastAccentLedStep = millis();
+
+  for (uint8_t i = 0; i < LED_NUM; i++) {
+    uint8_t colorIndex = (accentLedStep + i) % colorCount;
+    leds.setPixelColor(i, leds.Color(colors[colorIndex][0], colors[colorIndex][1], colors[colorIndex][2]));
+  }
+
+  leds.show();
+  accentLedStep = (accentLedStep + 1) % colorCount;
+}
+
+void waitWithAccentLeds(unsigned long durationMs) {
+  unsigned long startedAt = millis();
+
+  while (millis() - startedAt < durationMs) {
+    updateAccentLeds();
+    delay(20);
+    yield();
   }
 }
 
@@ -326,60 +375,183 @@ String formatSubscriberCount(long count) {
 
 String formatSubscriberDelta(long delta) {
   long absoluteDelta = labs(delta);
-  String value;
 
-  if (absoluteDelta < 1000) {
-    value = String(absoluteDelta);
-  } else if (absoluteDelta < 1000000) {
-    value = String(absoluteDelta / 1000) + "K";
-  } else {
-    value = String(absoluteDelta / 1000000) + "M";
+  if (delta < 0) {
+    return "-" + formatCompactDeltaMagnitude(absoluteDelta);
   }
 
   if (delta > 0) {
-    return "+" + value;
+    return "+" + formatCompactDeltaMagnitude(absoluteDelta);
   }
 
-  if (delta < 0) {
-    return "-" + value;
-  }
-
-  return value;
+  return "0";
 }
 
-void drawDeltaWaveFrame(uint8_t phase) {
-  static const uint8_t waveRows[] = {1, 0, 0, 1, 2, 2, 1, 0};
+String formatCompactDeltaMagnitude(unsigned long absoluteDelta) {
+  if (absoluteDelta < 1000) {
+    return String(absoluteDelta);
+  }
+
+  if (absoluteDelta < 1000000UL) {
+    return String(absoluteDelta / 1000UL) + "K";
+  }
+
+  if (absoluteDelta < 1000000000UL) {
+    return String(absoluteDelta / 1000000UL) + "M";
+  }
+
+  return String(absoluteDelta / 1000000000UL) + "B";
+}
+
+uint8_t measureTextWidth(const String& text) {
   MD_MAX72XX* matrix = myDisplay.getGraphicObject();
+  uint8_t cBuf[8];
+  uint8_t width = 0;
+
+  for (uint8_t i = 0; i < text.length(); i++) {
+    width += matrix->getChar(text.charAt(i), sizeof(cBuf) / sizeof(cBuf[0]), cBuf);
+    if (i < text.length() - 1) {
+      width += CHAR_SPACING;
+    }
+  }
+
+  return width;
+}
+
+uint8_t bottomAlignFontColumn(uint8_t columnData) {
+  return columnData << 1;
+}
+
+void drawCenteredText(MD_MAX72XX* matrix, const String& text, uint8_t textWidth) {
+  int16_t col = ((DISPLAY_COLUMN_COUNT + textWidth) / 2) - 1;
+  drawTextAt(matrix, text, col - textWidth + 1, textWidth);
+}
+
+void drawTextAt(MD_MAX72XX* matrix, const String& text, int16_t startColumn, uint8_t textWidth) {
+  uint8_t cBuf[8];
+  int16_t col = startColumn + textWidth - 1;
+
+  for (uint8_t i = 0; i < text.length(); i++) {
+    uint8_t charWidth = matrix->getChar(text.charAt(i), sizeof(cBuf) / sizeof(cBuf[0]), cBuf);
+
+    for (uint8_t c = 0; c < charWidth; c++) {
+      if (col >= 0 && col < DISPLAY_COLUMN_COUNT) {
+        matrix->setColumn(col, bottomAlignFontColumn(cBuf[c]));
+      }
+      col--;
+    }
+
+    if (i < text.length() - 1) {
+      for (uint8_t space = 0; space < CHAR_SPACING; space++) {
+        if (col >= 0 && col < DISPLAY_COLUMN_COUNT) {
+          matrix->setColumn(col, 0);
+        }
+        col--;
+      }
+    }
+  }
+}
+
+void drawSmallPlus(MD_MAX72XX* matrix, uint8_t startColumn) {
+  matrix->setPoint(4, startColumn, true);
+  matrix->setPoint(3, startColumn + 1, true);
+  matrix->setPoint(4, startColumn + 1, true);
+  matrix->setPoint(5, startColumn + 1, true);
+  matrix->setPoint(4, startColumn + 2, true);
+}
+
+void displayCenteredText(const String& text) {
+  MD_MAX72XX* matrix = myDisplay.getGraphicObject();
+  uint8_t textWidth = measureTextWidth(text);
+
+  matrix->control(MD_MAX72XX::UPDATE, MD_MAX72XX::OFF);
+  matrix->clear();
+  drawCenteredText(matrix, text, textWidth);
+  matrix->control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
+}
+
+void drawSideWave(MD_MAX72XX* matrix, uint8_t startColumn, uint8_t waveWidth, uint8_t phase, bool mirror) {
+  static const uint8_t waveRows[] = {1, 0, 0, 1, 2, 2, 1, 0};
+  const uint8_t patternWidth = sizeof(waveRows) / sizeof(waveRows[0]);
+
+  for (uint8_t i = 0; i < waveWidth; i++) {
+    uint8_t col = startColumn + i;
+    uint8_t patternIndex = mirror
+      ? ((waveWidth - 1 - i + phase) % patternWidth)
+      : ((i + phase) % patternWidth);
+    uint8_t topRow = waveRows[patternIndex];
+
+    matrix->setPoint(topRow, col, true);
+    matrix->setPoint(7 - topRow, col, true);
+  }
+}
+
+void drawDeltaViewFrame(const String& deltaValue, uint8_t phase) {
+  MD_MAX72XX* matrix = myDisplay.getGraphicObject();
+  uint8_t textWidth = measureTextWidth(deltaValue);
+  uint8_t contentWidth = DELTA_PLUS_WIDTH + DELTA_PLUS_SPACING + textWidth;
+  int16_t contentStart = max(0, (DISPLAY_COLUMN_COUNT - contentWidth) / 2);
+  uint8_t availableSideWidth = 0;
+
+  if (contentWidth < DISPLAY_COLUMN_COUNT) {
+    availableSideWidth = (DISPLAY_COLUMN_COUNT - contentWidth) / 2;
+  }
+
+  uint8_t requestedWaveWidth = availableSideWidth > 1 ? availableSideWidth - 1 : 0;
+  uint8_t waveWidth = min(DELTA_WAVE_MAX_WIDTH, requestedWaveWidth);
 
   matrix->control(MD_MAX72XX::UPDATE, MD_MAX72XX::OFF);
   matrix->clear();
 
-  for (uint8_t col = 0; col < DISPLAY_COLUMN_COUNT; col++) {
-    uint8_t topRow = waveRows[(col + phase) % (sizeof(waveRows) / sizeof(waveRows[0]))];
-    matrix->setPoint(topRow, col, true);
-    matrix->setPoint(7 - topRow, col, true);
+  if (waveWidth > 0) {
+    drawSideWave(matrix, 0, waveWidth, phase, false);
+    drawSideWave(matrix, DISPLAY_COLUMN_COUNT - waveWidth, waveWidth, phase, true);
   }
+
+  drawTextAt(matrix, deltaValue, contentStart, textWidth);
+  drawSmallPlus(matrix, contentStart + textWidth + DELTA_PLUS_SPACING);
 
   matrix->control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
 }
 
 void animateSubscriberDelta(long delta) {
-  String formattedDelta = formatSubscriberDelta(delta);
-
-  for (uint8_t frame = 0; frame < WAVE_FRAME_COUNT; frame++) {
-    drawDeltaWaveFrame(frame);
-    delay(WAVE_FRAME_DELAY_MS);
-    yield();
+  if (delta <= 0) {
+    return;
   }
 
-  myDisplay.displayClear();
-  myDisplay.print(formattedDelta);
-  delay(DELTA_TEXT_DISPLAY_MS);
+  String deltaValue = formatCompactDeltaMagnitude(delta);
+  unsigned long startedAt = millis();
+  uint8_t frame = 0;
+
+  do {
+    drawDeltaViewFrame(deltaValue, frame++);
+    waitWithAccentLeds(WAVE_FRAME_DELAY_MS);
+  } while (millis() - startedAt < DELTA_SEQUENCE_DISPLAY_MS);
+}
+
+void displayDemoText(const String& text, unsigned long durationMs) {
+  displayCenteredText(text);
+  waitWithAccentLeds(durationMs);
+}
+
+void runDisplayDemo() {
+  animateSubscriberDelta(YT_DISPLAY_DEMO_DELTA);
+  animateSubscriberDelta(999);
+  animateSubscriberDelta(1000);
+  animateSubscriberDelta(999000000L);
+  displayDemoText(formatSubscriberCount(YT_DISPLAY_DEMO_COUNT), 2500);
+  displayDemoText(ERROR_TEXT_API_KEY, 2500);
+  displayDemoText(ERROR_TEXT_CHANNEL_ID, 2500);
+  displayDemoText(ERROR_TEXT_WIFI, 2500);
+  displayDemoText(ERROR_TEXT_API_FETCH, 2500);
 }
 
 bool fetchSubscriberCount(long* subscriberCount) {
+  lastFetchError = FETCH_ERROR_NONE;
+
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println(F("Wi-Fi is disconnected."));
+    lastFetchError = FETCH_ERROR_WIFI;
     return false;
   }
 
@@ -388,14 +560,23 @@ bool fetchSubscriberCount(long* subscriberCount) {
     return true;
   }
 
+  lastFetchError = FETCH_ERROR_API;
   return false;
+}
+
+void displayFetchError() {
+  if (lastFetchError == FETCH_ERROR_WIFI) {
+    displayCenteredText(ERROR_TEXT_WIFI);
+    return;
+  }
+
+  displayCenteredText(ERROR_TEXT_API_FETCH);
 }
 
 void handleFetchSubscribers() {
   long rawSubscriberCount = 0;
 
-  myDisplay.displayClear();
-  myDisplay.print("Fetch");
+  displayCenteredText("Fetch");
 
   if (fetchSubscriberCount(&rawSubscriberCount)) {
     bool hadPreviousCount = hasLastKnownSubscriberCount;
@@ -404,7 +585,7 @@ void handleFetchSubscribers() {
     Serial.print(F("Subscriber Count: "));
     Serial.println(rawSubscriberCount);
 
-    if (hadPreviousCount) {
+    if (hadPreviousCount && rawSubscriberCount > previousSubscriberCount) {
       long subscriberDelta = rawSubscriberCount - previousSubscriberCount;
       String formattedDelta = formatSubscriberDelta(subscriberDelta);
       Serial.print(F("Subscriber Delta: "));
@@ -412,8 +593,7 @@ void handleFetchSubscribers() {
       animateSubscriberDelta(subscriberDelta);
     }
 
-    myDisplay.displayClear();
-    myDisplay.print(formattedSubscriberCount);
+    displayCenteredText(formattedSubscriberCount);
 
     if (!hadPreviousCount || rawSubscriberCount != previousSubscriberCount) {
       lastKnownSubscriberCount = rawSubscriberCount;
@@ -422,8 +602,7 @@ void handleFetchSubscribers() {
     }
   } else {
     Serial.println(F("Failed to fetch subscriber count."));
-    myDisplay.displayClear();
-    myDisplay.print("Error");
+    displayFetchError();
   }
 
   lastSubscriberFetch = millis();
@@ -431,21 +610,11 @@ void handleFetchSubscribers() {
 
 void loop() {
 #if YT_DISPLAY_DEMO
-  animateSubscriberDelta(YT_DISPLAY_DEMO_DELTA);
-  myDisplay.displayClear();
-  myDisplay.print(formatSubscriberCount(YT_DISPLAY_DEMO_COUNT));
-  delay(2500);
+  runDisplayDemo();
   return;
 #endif
 
-  led_set(50, 50, 50);
-  led_set(80, 80, 100);
-
-  led_set(50, 50, 50);
-  led_set(100, 80, 80);
-
-  led_set(50, 50, 50);
-  led_set(80, 100, 80);
+  updateAccentLeds();
 
   if (millis() - lastSubscriberFetch >= SUBSCRIBER_FETCH_INTERVAL_MS) {
     handleFetchSubscribers();
