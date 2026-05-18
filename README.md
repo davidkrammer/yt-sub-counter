@@ -7,7 +7,7 @@ ESP8266 firmware for showing a live YouTube subscriber count on a MAX7219 LED ma
 - Fetches YouTube channel statistics through the YouTube Data API v3.
 - Shows the current subscriber count on a 4-module MAX7219 LED matrix.
 - Refreshes once on boot and then every 3 minutes from the main loop.
-- Shows the subscriber delta first, for example `=+9=`, then shows the updated count.
+- Shows a wave animation for subscriber changes, then `+NUMBER` or `-NUMBER`, then the updated count.
 - Stores Wi-Fi credentials through WiFiManager.
 - Stores YouTube API key and channel ID in LittleFS.
 - Supports an optional local-only `secrets.h` file for hardware deployments.
@@ -108,7 +108,7 @@ The ESP8266 stores the values locally and reuses them on future boots. If saved 
 
 ## Refresh Behavior
 
-The sketch fetches the subscriber count once after setup, then refreshes every 3 minutes. On each successful refresh after the first known count, it briefly shows the delta in a compact matrix-friendly format such as `=+9=` and then shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
+The sketch fetches the subscriber count once after setup, then refreshes every 3 minutes. On each successful refresh after the first known count, it shows a short top-and-bottom wave animation with the middle rows left empty, then shows the delta as `+NUMBER` or `-NUMBER`, and then shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
 
 The refresh is driven by `millis()` in `loop()`, which keeps HTTPS/API work out of timer callbacks and avoids the update stall caused by the old loop counter approach.
 

@@ -32,6 +32,18 @@
   #define YT_CHANNEL_ID ""
 #endif
 
+#ifndef YT_DISPLAY_DEMO
+  #define YT_DISPLAY_DEMO 0
+#endif
+
+#ifndef YT_DISPLAY_DEMO_DELTA
+  #define YT_DISPLAY_DEMO_DELTA 9
+#endif
+
+#ifndef YT_DISPLAY_DEMO_COUNT
+  #define YT_DISPLAY_DEMO_COUNT 18709
+#endif
+
 // LED MATRIX DISPLAY DEFINITION
 #define HARDWARE_TYPE MD_MAX72XX::FC16_HW
 #define MAX_DEVICES  4
@@ -45,8 +57,11 @@
 const char* CONFIG_FILE = "/config.json";
 const char* CONFIG_PORTAL_SSID = "YouTubePlayButtonSetup";
 const unsigned long SUBSCRIBER_FETCH_INTERVAL_MS = 3UL * 60UL * 1000UL;
-const unsigned long DELTA_DISPLAY_MS = 2500UL;
+const unsigned long DELTA_TEXT_DISPLAY_MS = 1600UL;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000UL;
+const uint8_t DISPLAY_COLUMN_COUNT = MAX_DEVICES * 8;
+const uint8_t WAVE_FRAME_COUNT = 18;
+const uint8_t WAVE_FRAME_DELAY_MS = 75;
 
 char youtubeApiKey[80] = "";
 char youtubeChannelId[48] = "";
@@ -273,6 +288,10 @@ void setup() {
 
   delay(1000);
 
+#if YT_DISPLAY_DEMO
+  return;
+#endif
+
   connectWifiAndLoadConfig();
 
   myDisplay.displayClear();
@@ -306,7 +325,6 @@ String formatSubscriberCount(long count) {
 }
 
 String formatSubscriberDelta(long delta) {
-  String sign = delta > 0 ? "+" : "";
   long absoluteDelta = labs(delta);
   String value;
 
@@ -318,7 +336,45 @@ String formatSubscriberDelta(long delta) {
     value = String(absoluteDelta / 1000000) + "M";
   }
 
-  return "=" + sign + value + "=";
+  if (delta > 0) {
+    return "+" + value;
+  }
+
+  if (delta < 0) {
+    return "-" + value;
+  }
+
+  return value;
+}
+
+void drawDeltaWaveFrame(uint8_t phase) {
+  static const uint8_t waveRows[] = {1, 0, 0, 1, 2, 2, 1, 0};
+  MD_MAX72XX* matrix = myDisplay.getGraphicObject();
+
+  matrix->control(MD_MAX72XX::UPDATE, MD_MAX72XX::OFF);
+  matrix->clear();
+
+  for (uint8_t col = 0; col < DISPLAY_COLUMN_COUNT; col++) {
+    uint8_t topRow = waveRows[(col + phase) % (sizeof(waveRows) / sizeof(waveRows[0]))];
+    matrix->setPoint(topRow, col, true);
+    matrix->setPoint(7 - topRow, col, true);
+  }
+
+  matrix->control(MD_MAX72XX::UPDATE, MD_MAX72XX::ON);
+}
+
+void animateSubscriberDelta(long delta) {
+  String formattedDelta = formatSubscriberDelta(delta);
+
+  for (uint8_t frame = 0; frame < WAVE_FRAME_COUNT; frame++) {
+    drawDeltaWaveFrame(frame);
+    delay(WAVE_FRAME_DELAY_MS);
+    yield();
+  }
+
+  myDisplay.displayClear();
+  myDisplay.print(formattedDelta);
+  delay(DELTA_TEXT_DISPLAY_MS);
 }
 
 bool fetchSubscriberCount(long* subscriberCount) {
@@ -349,12 +405,11 @@ void handleFetchSubscribers() {
     Serial.println(rawSubscriberCount);
 
     if (hadPreviousCount) {
-      String formattedDelta = formatSubscriberDelta(rawSubscriberCount - previousSubscriberCount);
+      long subscriberDelta = rawSubscriberCount - previousSubscriberCount;
+      String formattedDelta = formatSubscriberDelta(subscriberDelta);
       Serial.print(F("Subscriber Delta: "));
       Serial.println(formattedDelta);
-      myDisplay.displayClear();
-      myDisplay.print(formattedDelta);
-      delay(DELTA_DISPLAY_MS);
+      animateSubscriberDelta(subscriberDelta);
     }
 
     myDisplay.displayClear();
@@ -375,6 +430,14 @@ void handleFetchSubscribers() {
 }
 
 void loop() {
+#if YT_DISPLAY_DEMO
+  animateSubscriberDelta(YT_DISPLAY_DEMO_DELTA);
+  myDisplay.displayClear();
+  myDisplay.print(formatSubscriberCount(YT_DISPLAY_DEMO_COUNT));
+  delay(2500);
+  return;
+#endif
+
   led_set(50, 50, 50);
   led_set(80, 80, 100);
 
