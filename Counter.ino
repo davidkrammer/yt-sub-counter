@@ -44,7 +44,7 @@
 
 const char* CONFIG_FILE = "/config.json";
 const char* CONFIG_PORTAL_SSID = "YouTubePlayButtonSetup";
-const unsigned long SUBSCRIBER_FETCH_INTERVAL_MS = 10UL * 60UL * 1000UL;
+const unsigned long SUBSCRIBER_FETCH_INTERVAL_MS = 3UL * 60UL * 1000UL;
 const unsigned long DELTA_DISPLAY_MS = 2500UL;
 const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000UL;
 

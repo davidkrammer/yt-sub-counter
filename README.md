@@ -6,7 +6,7 @@ ESP8266 firmware for showing a live YouTube subscriber count on a MAX7219 LED ma
 
 - Fetches YouTube channel statistics through the YouTube Data API v3.
 - Shows the current subscriber count on a 4-module MAX7219 LED matrix.
-- Refreshes once on boot and then every 10 minutes from the main loop.
+- Refreshes once on boot and then every 3 minutes from the main loop.
 - Shows the subscriber delta first, for example `=+9=`, then shows the updated count.
 - Stores Wi-Fi credentials through WiFiManager.
 - Stores YouTube API key and channel ID in LittleFS.
@@ -108,7 +108,7 @@ The ESP8266 stores the values locally and reuses them on future boots. If saved 
 
 ## Refresh Behavior
 
-The sketch fetches the subscriber count once after setup, then refreshes every 10 minutes. On each successful refresh after the first known count, it briefly shows the delta in a compact matrix-friendly format such as `=+9=` and then shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
+The sketch fetches the subscriber count once after setup, then refreshes every 3 minutes. On each successful refresh after the first known count, it briefly shows the delta in a compact matrix-friendly format such as `=+9=` and then shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
 
 The refresh is driven by `millis()` in `loop()`, which keeps HTTPS/API work out of timer callbacks and avoids the update stall caused by the old loop counter approach.
 
@@ -116,11 +116,12 @@ The refresh is driven by `millis()` in `loop()`, which keeps HTTPS/API work out 
 
 The firmware uses the YouTube Data API `channels.list` statistics request through the `YoutubeApi` library. Google's quota table lists `channels.list` as a 1-unit request, and the default project quota is 10,000 units per day with daily reset at midnight Pacific Time.
 
-At the default 10-minute refresh interval, one counter uses about 144 units/day. For comparison:
+At the default 3-minute refresh interval, one counter uses about 480 units/day. For comparison:
 
 | Refresh interval | Requests/day | Quota units/day |
 | --- | ---: | ---: |
 | 1 minute | 1,440 | 1,440 |
+| 3 minutes | 480 | 480 |
 | 5 minutes | 288 | 288 |
 | 10 minutes | 144 | 144 |
 | 1 hour | 24 | 24 |
