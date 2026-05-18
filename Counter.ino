@@ -614,8 +614,6 @@ void displayFetchError() {
 void handleFetchSubscribers() {
   long rawSubscriberCount = 0;
 
-  displayCenteredText("Fetch");
-
   if (fetchSubscriberCount(&rawSubscriberCount)) {
     bool hadPreviousCount = hasLastKnownSubscriberCount;
     long previousSubscriberCount = lastKnownSubscriberCount;
