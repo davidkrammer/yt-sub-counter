@@ -6,9 +6,11 @@ ESP8266 firmware for showing a live YouTube subscriber count on a MAX7219 LED ma
 
 - Fetches YouTube channel statistics through the YouTube Data API v3.
 - Shows the current subscriber count on a 4-module MAX7219 LED matrix.
-- Refreshes once on boot and then every hour from the main loop.
+- Refreshes once on boot and then every 10 minutes from the main loop.
+- Shows the subscriber delta first, for example `=+9=`, then shows the updated count.
 - Stores Wi-Fi credentials through WiFiManager.
 - Stores YouTube API key and channel ID in LittleFS.
+- Supports an optional local-only `secrets.h` file for hardware deployments.
 - Includes a PlatformIO project file for repeatable builds.
 
 ## Hardware
@@ -59,6 +61,25 @@ PlatformIO installs the project dependencies from `platformio.ini` automatically
 
 Keep the API key and channel ID ready for the device setup portal.
 
+## Local Hardware Secrets
+
+The repo does not commit private values. For a local hardware deployment, copy the example file and fill in your values:
+
+```sh
+cp secrets.example.h secrets.h
+```
+
+Then edit `secrets.h`:
+
+```cpp
+#define YT_WIFI_SSID "Your Wi-Fi SSID"
+#define YT_WIFI_PASSWORD "Your Wi-Fi password"
+#define YT_API_KEY "Your YouTube Data API v3 key"
+#define YT_CHANNEL_ID "Your YouTube channel ID"
+```
+
+`secrets.h` is ignored by git. If it is present, the firmware tries those Wi-Fi credentials first and uses the embedded YouTube API key/channel ID in preference to older saved portal values. If the Wi-Fi connection fails or no local secrets are present, it falls back to the `YouTubePlayButtonSetup` captive portal.
+
 ## Build and Upload
 
 With PlatformIO:
@@ -87,7 +108,24 @@ The ESP8266 stores the values locally and reuses them on future boots. If saved 
 
 ## Refresh Behavior
 
-The sketch fetches the subscriber count once after setup, then refreshes every hour. The refresh is driven by `millis()` in `loop()`, which keeps HTTPS/API work out of timer callbacks and avoids the update stall caused by the old loop counter approach.
+The sketch fetches the subscriber count once after setup, then refreshes every 10 minutes. On each successful refresh after the first known count, it briefly shows the delta in a compact matrix-friendly format such as `=+9=` and then shows the updated subscriber count. The last known count is stored in LittleFS so the delta can survive a restart.
+
+The refresh is driven by `millis()` in `loop()`, which keeps HTTPS/API work out of timer callbacks and avoids the update stall caused by the old loop counter approach.
+
+## API Quota
+
+The firmware uses the YouTube Data API `channels.list` statistics request through the `YoutubeApi` library. Google's quota table lists `channels.list` as a 1-unit request, and the default project quota is 10,000 units per day with daily reset at midnight Pacific Time.
+
+At the default 10-minute refresh interval, one counter uses about 144 units/day. For comparison:
+
+| Refresh interval | Requests/day | Quota units/day |
+| --- | ---: | ---: |
+| 1 minute | 1,440 | 1,440 |
+| 5 minutes | 288 | 288 |
+| 10 minutes | 144 | 144 |
+| 1 hour | 24 | 24 |
+
+The interval is set in `SUBSCRIBER_FETCH_INTERVAL_MS` in `Counter.ino`.
 
 ## Troubleshooting
 

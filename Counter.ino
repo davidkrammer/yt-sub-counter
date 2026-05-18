@@ -10,6 +10,28 @@
 
 #include <Adafruit_NeoPixel.h>
 
+#if defined(__has_include)
+  #if __has_include("secrets.h")
+    #include "secrets.h"
+  #endif
+#endif
+
+#ifndef YT_WIFI_SSID
+  #define YT_WIFI_SSID ""
+#endif
+
+#ifndef YT_WIFI_PASSWORD
+  #define YT_WIFI_PASSWORD ""
+#endif
+
+#ifndef YT_API_KEY
+  #define YT_API_KEY ""
+#endif
+
+#ifndef YT_CHANNEL_ID
+  #define YT_CHANNEL_ID ""
+#endif
+
 // LED MATRIX DISPLAY DEFINITION
 #define HARDWARE_TYPE MD_MAX72XX::FC16_HW
 #define MAX_DEVICES  4
@@ -22,12 +44,16 @@
 
 const char* CONFIG_FILE = "/config.json";
 const char* CONFIG_PORTAL_SSID = "YouTubePlayButtonSetup";
-const unsigned long SUBSCRIBER_FETCH_INTERVAL_MS = 60UL * 60UL * 1000UL;
+const unsigned long SUBSCRIBER_FETCH_INTERVAL_MS = 10UL * 60UL * 1000UL;
+const unsigned long DELTA_DISPLAY_MS = 2500UL;
+const unsigned long WIFI_CONNECT_TIMEOUT_MS = 20000UL;
 
 char youtubeApiKey[80] = "";
 char youtubeChannelId[48] = "";
 bool shouldSaveConfig = false;
 unsigned long lastSubscriberFetch = 0;
+long lastKnownSubscriberCount = -1;
+bool hasLastKnownSubscriberCount = false;
 
 Adafruit_NeoPixel leds = Adafruit_NeoPixel(LED_NUM, PIN, NEO_GRB + NEO_KHZ800);
 MD_Parola myDisplay = MD_Parola(HARDWARE_TYPE, DATA_PIN, CLK_PIN, CS_PIN, MAX_DEVICES);
@@ -37,6 +63,26 @@ YoutubeApi api(youtubeApiKey, client);
 
 void saveConfigCallback() {
   shouldSaveConfig = true;
+}
+
+bool hasText(const char* value) {
+  return value != nullptr && strlen(value) > 0;
+}
+
+bool applyEmbeddedSecrets() {
+  bool changed = false;
+
+  if (hasText(YT_API_KEY) && strncmp(YT_API_KEY, youtubeApiKey, sizeof(youtubeApiKey)) != 0) {
+    strlcpy(youtubeApiKey, YT_API_KEY, sizeof(youtubeApiKey));
+    changed = true;
+  }
+
+  if (hasText(YT_CHANNEL_ID) && strncmp(YT_CHANNEL_ID, youtubeChannelId, sizeof(youtubeChannelId)) != 0) {
+    strlcpy(youtubeChannelId, YT_CHANNEL_ID, sizeof(youtubeChannelId));
+    changed = true;
+  }
+
+  return changed;
 }
 
 bool initializeFileSystem() {
@@ -80,6 +126,10 @@ bool loadConfig() {
 
   strlcpy(youtubeApiKey, doc["apiKey"] | "", sizeof(youtubeApiKey));
   strlcpy(youtubeChannelId, doc["channelId"] | "", sizeof(youtubeChannelId));
+  if (doc.containsKey("lastSubscriberCount")) {
+    lastKnownSubscriberCount = doc["lastSubscriberCount"].as<long>();
+    hasLastKnownSubscriberCount = lastKnownSubscriberCount >= 0;
+  }
 
   return strlen(youtubeApiKey) > 0 && strlen(youtubeChannelId) > 0;
 }
@@ -92,6 +142,9 @@ bool saveConfig() {
   StaticJsonDocument<256> doc;
   doc["apiKey"] = youtubeApiKey;
   doc["channelId"] = youtubeChannelId;
+  if (hasLastKnownSubscriberCount) {
+    doc["lastSubscriberCount"] = lastKnownSubscriberCount;
+  }
 
   File configFile = LittleFS.open(CONFIG_FILE, "w");
   if (!configFile) {
@@ -112,7 +165,7 @@ bool saveConfig() {
 }
 
 bool copyConfigValue(const char* value, char* target, size_t targetSize) {
-  if (value == nullptr || strlen(value) == 0) {
+  if (!hasText(value)) {
     return false;
   }
 
@@ -124,8 +177,39 @@ bool copyConfigValue(const char* value, char* target, size_t targetSize) {
   return true;
 }
 
+bool connectWithEmbeddedWifi() {
+  if (!hasText(YT_WIFI_SSID)) {
+    return false;
+  }
+
+  Serial.print(F("Connecting to embedded Wi-Fi SSID: "));
+  Serial.println(F(YT_WIFI_SSID));
+  myDisplay.displayClear();
+  myDisplay.print("WiFi");
+
+  WiFi.begin(YT_WIFI_SSID, YT_WIFI_PASSWORD);
+  unsigned long startedAt = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < WIFI_CONNECT_TIMEOUT_MS) {
+    delay(250);
+    yield();
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print(F("Connected. IP: "));
+    Serial.println(WiFi.localIP());
+    return true;
+  }
+
+  Serial.println(F("Embedded Wi-Fi connect timed out. Falling back to setup portal."));
+  WiFi.disconnect();
+  return false;
+}
+
 void connectWifiAndLoadConfig() {
-  bool hasConfig = loadConfig();
+  loadConfig();
+  bool embeddedConfigChanged = applyEmbeddedSecrets();
+  bool hasConfig = hasText(youtubeApiKey) && hasText(youtubeChannelId);
 
   WiFi.mode(WIFI_STA);
 
@@ -137,12 +221,16 @@ void connectWifiAndLoadConfig() {
   wifiManager.addParameter(&apiKeyParameter);
   wifiManager.addParameter(&channelIdParameter);
 
-  myDisplay.displayClear();
-  myDisplay.print(hasConfig ? "WiFi" : "Setup");
+  bool connected = hasConfig && connectWithEmbeddedWifi();
 
-  bool connected = hasConfig
-    ? wifiManager.autoConnect(CONFIG_PORTAL_SSID)
-    : wifiManager.startConfigPortal(CONFIG_PORTAL_SSID);
+  if (!connected) {
+    myDisplay.displayClear();
+    myDisplay.print(hasConfig ? "WiFi" : "Setup");
+
+    connected = hasConfig
+      ? wifiManager.autoConnect(CONFIG_PORTAL_SSID)
+      : wifiManager.startConfigPortal(CONFIG_PORTAL_SSID);
+  }
 
   if (!connected) {
     Serial.println(F("Failed to connect or configure Wi-Fi."));
@@ -156,7 +244,7 @@ void connectWifiAndLoadConfig() {
   configChanged |= copyConfigValue(apiKeyParameter.getValue(), youtubeApiKey, sizeof(youtubeApiKey));
   configChanged |= copyConfigValue(channelIdParameter.getValue(), youtubeChannelId, sizeof(youtubeChannelId));
 
-  if (shouldSaveConfig || configChanged) {
+  if (shouldSaveConfig || configChanged || embeddedConfigChanged) {
     saveConfig();
   }
 
@@ -203,26 +291,34 @@ void led_set(uint8_t R, uint8_t G, uint8_t B) {
 }
 
 String formatSubscriberCount(long count) {
-  if (count < 1000) {
-     return String(count);
-  } else if (count < 10000) {
-     return String(count);
-  } else if (count < 100000) {
-     int thousands = count / 1000;
-     int remainder = (count % 1000) / 10;
-     return String(thousands) + "," + (remainder < 10 ? "0" : "") + String(remainder) + "K";
+  if (count < 100000) {
+    return String(count);
   } else if (count < 1000000) {
-     int thousands = count / 1000;
-     int remainder = (count % 1000) / 100;
-     return String(thousands) + "," + String(remainder) + "K";
+    return String(count / 1000) + "K";
   } else if (count < 10000000) {
     int millions = count / 1000000;
     int remainder = (count % 1000000) / 100000;
-    return String(millions) + "," + String(remainder) + "M";
+    return String(millions) + "." + String(remainder) + "M";
   } else {
     int millions = count / 1000000;
     return String(millions) + "M";
   }
+}
+
+String formatSubscriberDelta(long delta) {
+  String sign = delta > 0 ? "+" : "";
+  long absoluteDelta = labs(delta);
+  String value;
+
+  if (absoluteDelta < 1000) {
+    value = String(absoluteDelta);
+  } else if (absoluteDelta < 1000000) {
+    value = String(absoluteDelta / 1000) + "K";
+  } else {
+    value = String(absoluteDelta / 1000000) + "M";
+  }
+
+  return "=" + sign + value + "=";
 }
 
 bool fetchSubscriberCount(long* subscriberCount) {
@@ -246,11 +342,29 @@ void handleFetchSubscribers() {
   myDisplay.print("Fetch");
 
   if (fetchSubscriberCount(&rawSubscriberCount)) {
+    bool hadPreviousCount = hasLastKnownSubscriberCount;
+    long previousSubscriberCount = lastKnownSubscriberCount;
     String formattedSubscriberCount = formatSubscriberCount(rawSubscriberCount);
     Serial.print(F("Subscriber Count: "));
     Serial.println(rawSubscriberCount);
+
+    if (hadPreviousCount) {
+      String formattedDelta = formatSubscriberDelta(rawSubscriberCount - previousSubscriberCount);
+      Serial.print(F("Subscriber Delta: "));
+      Serial.println(formattedDelta);
+      myDisplay.displayClear();
+      myDisplay.print(formattedDelta);
+      delay(DELTA_DISPLAY_MS);
+    }
+
     myDisplay.displayClear();
     myDisplay.print(formattedSubscriberCount);
+
+    if (!hadPreviousCount || rawSubscriberCount != previousSubscriberCount) {
+      lastKnownSubscriberCount = rawSubscriberCount;
+      hasLastKnownSubscriberCount = true;
+      saveConfig();
+    }
   } else {
     Serial.println(F("Failed to fetch subscriber count."));
     myDisplay.displayClear();
